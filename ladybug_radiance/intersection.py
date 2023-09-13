@@ -4,6 +4,8 @@ import os
 import subprocess
 import tempfile
 import math
+from typing import Tuple
+import numpy as np
 
 from ladybug_geometry.geometry3d import Face3D, Mesh3D
 from ladybug.futil import write_to_file_by_name
@@ -127,22 +129,19 @@ def intersection_matrix(vectors, points, normals, context_geometry,
     rad_par = '-V- -aa 0.0 -y {} -I -faf -ab 0 -dc 1.0 -dt 0.0 -dj 0.0 -dr 0 -M "{}"'
     rc_options = rad_par.format(
         len(points), os.path.join(os.path.abspath(sim_folder), vec_mod_file))
-    cmd = '"{}" {} "{}" < "{}"'.format(RCONTRIB_EXE, rc_options, scene_oct, pts_file)
-    cmd = '{} | rmtxop -fa - -c 14713 0 0 | getinfo -  > {}'.format(cmd, output_mtx)
+    cmd = '"{}" {} "{}" < "{}" > "{}"'.format(RCONTRIB_EXE, rc_options, scene_oct, pts_file, output_mtx)
     cmd = cmd.replace('\\', '/')
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True, env=g_env)
     process.communicate()
 
     # put back the current working directory and load the intersection matrix
     os.chdir(cur_dir)
-    int_mtx = []
-    with open(os.path.join(sim_folder, output_mtx), 'r') as rf:
-        if numericalize:
-            for row in rf:
-                int_mtx.append([float(v) for v in row.split()])
-        else:
-            for row in rf:
-                int_mtx.append([bool(float(v)) for v in row.split()])
+    int_mtx = binary_to_array(os.path.join(sim_folder, output_mtx))
+    conversion = np.array([14713, 0, 0])
+    int_mtx = np.dot(int_mtx, conversion)
+    if not numericalize:
+        int_mtx = int_mtx.astype(dtype=bool)
+
     return int_mtx
 
 
@@ -191,3 +190,87 @@ def sky_intersection_matrix(sky_matrix, points, normals, context_geometry,
     return intersection_matrix(
         vectors, points, normals, context_geometry,
         offset_distance, numericalize, sim_folder)
+
+
+def binary_to_array(
+        binary_file: str, nrows: int = None, ncols: int = None,
+        ncomp: int = None, line_count: int = 0) -> np.ndarray:
+    """Read a Radiance binary file as a NumPy array.
+
+    Args:
+        binary_file: Path to binary Radiance file.
+        nrows: Number of rows in the Radiance file.
+        ncols: Number of columns in the Radiance file.
+        ncomp: Number of components of each element in the Radiance file.
+        line_count: Number of lines to skip in the input file. Usually used to
+            skip the header.
+
+    Returns:
+        A NumPy array.
+    """
+    with open(binary_file, 'rb') as reader:
+        if (nrows or ncols or ncomp) is None:
+            # get nrows, ncols and header line count
+            nrows, ncols, ncomp, line_count = binary_mtx_dimension(binary_file)
+        # skip first n lines from reader
+        for i in range(line_count):
+            reader.readline()
+
+        array = np.fromfile(reader, dtype=np.float32)
+        if ncomp != 1:
+            array = array.reshape(nrows, ncols, ncomp)
+        else:
+            array = array.reshape(nrows, ncols)
+
+    return array
+
+
+def binary_mtx_dimension(filepath: str) -> Tuple[int, int, int, int]:
+    """Return binary Radiance matrix dimensions if it exists.
+
+    This function returns NROWS, NCOLS, NCOMP and number of header lines including the
+    empty line after last header line.
+
+    Args:
+        filepath: Full path to Radiance file.
+
+    Returns:
+        nrows, ncols, ncomp, line_count
+    """
+    try:
+        inf = open(filepath, 'rb', encoding='utf-8')
+    except Exception:
+        inf = open(filepath, 'rb')
+    try:
+        first_line = next(inf).rstrip().decode('utf-8')
+        if first_line[:10] != '#?RADIANCE':
+            error_message = (
+                f'File with Radiance header must start with #?RADIANCE not '
+                f'{first_line}.'
+            )
+            raise ValueError(error_message)
+
+        header_lines = [first_line]
+        nrows = ncols = ncomp = None
+        for line in inf:
+            line = line.rstrip().decode('utf-8')
+            header_lines.append(line)
+            if line[:6] == 'NROWS=':
+                nrows = int(line.split('=')[-1])
+            if line[:6] == 'NCOLS=':
+                ncols = int(line.split('=')[-1])
+            if line[:6] == 'NCOMP=':
+                ncomp = int(line.split('=')[-1])
+            if line[:7] == 'FORMAT=':
+                break
+
+        if not nrows or not ncols:
+            error_message = (
+                f'NROWS or NCOLS was not found in the Radiance header. NROWS '
+                f'is {nrows} and NCOLS is {ncols}. The header must have both '
+                f'elements.'
+            )
+            raise ValueError(error_message)
+        return nrows, ncols, ncomp, len(header_lines) + 1
+    finally:
+        inf.close()
