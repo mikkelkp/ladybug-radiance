@@ -125,18 +125,16 @@ def intersection_matrix(vectors, points, normals, context_geometry,
     process.communicate()
 
     # run the ray tracing command
-    output_mtx = 'results.mtx'
-    rad_par = '-V- -aa 0.0 -y {} -I -faf -ab 0 -dc 1.0 -dt 0.0 -dj 0.0 -dr 0 -M "{}"'
+    rad_par = '-V- -aa 0.0 -y {} -I -faf -ab 0 -dc 1.0 -dt 0.0 -dj 0.0 -dr 0 -h -M "{}"'
     rc_options = rad_par.format(
         len(points), os.path.join(os.path.abspath(sim_folder), vec_mod_file))
-    cmd = '"{}" {} "{}" < "{}" > "{}"'.format(RCONTRIB_EXE, rc_options, scene_oct, pts_file, output_mtx)
+    cmd = '"{}" {} "{}" < "{}"'.format(RCONTRIB_EXE, rc_options, scene_oct, pts_file)
     cmd = cmd.replace('\\', '/')
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True, env=g_env)
-    process.communicate()
+    process = subprocess.run(cmd, stdout=subprocess.PIPE, shell=True, env=g_env)
+    int_mtx = np.frombuffer(process.stdout, np.float32).reshape(len(points), len(vectors), 3)
 
     # put back the current working directory and load the intersection matrix
     os.chdir(cur_dir)
-    int_mtx = binary_to_array(os.path.join(sim_folder, output_mtx))
     conversion = np.array([14713, 0, 0])
     int_mtx = np.dot(int_mtx, conversion)
     if not numericalize:
